@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 import traceback
 from keep_alive import keep_alive
 import apprise
+import logging
 
 import ipapi
 import requests
@@ -39,6 +40,14 @@ import zipfile
 from email.message import EmailMessage
 import ssl
 import smtplib
+
+def init_logging(log_level="INFO"):
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s :: %(levelname)-6s :: %(name)s :: %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ])
 
 # Define user-agents
 PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
@@ -1648,11 +1657,11 @@ def farmer():
             prYellow('********************' + CURRENT_ACCOUNT + '********************')
             if not LOGS[CURRENT_ACCOUNT]['PC searches']:
                 browser = browserSetup(False, PC_USER_AGENT, random.choice(ARGS.proxies) if ARGS.proxies else None)
-                print('[LOGIN]', 'Logging-in...')
+                logging.info(msg='[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'])
-                prGreen('[LOGIN] Logged-in successfully !')
+                logging.info(msg='[LOGIN] Logged-in successfully !')
                 startingPoints = POINTS_COUNTER
-                prGreen('[POINTS] You have ' + str(POINTS_COUNTER) + ' points on your account !')
+                logging.info(msg='[POINTS] You have ' + str(POINTS_COUNTER) + ' points on your account !')
                 browser.get('https://rewards.microsoft.com/dashboard')
                 if not LOGS[CURRENT_ACCOUNT]['Daily']:
                     completeDailySet(browser)
@@ -1663,9 +1672,9 @@ def farmer():
                 remainingSearches, remainingSearchesM = getRemainingSearches(browser)
                 MOBILE = bool(remainingSearchesM)
                 if remainingSearches != 0:
-                    print('[BING]', 'Starting Desktop and Edge Bing searches...')
+                    logging.info(msg='[BING]', 'Starting Desktop and Edge Bing searches...')
                     bingSearches(browser, remainingSearches)
-                    prGreen('[BING] Finished Desktop and Edge Bing searches !')
+                    logging.info(msg='[BING] Finished Desktop and Edge Bing searches !')
                     LOGS[CURRENT_ACCOUNT]['PC searches'] = True
                     updateLogs()
                     ERROR = False
@@ -1684,22 +1693,22 @@ def farmer():
 
             if MOBILE:
                 browser = browserSetup(True, account.get('mobile_user_agent', MOBILE_USER_AGENT), random.choice(ARGS.proxies) if ARGS.proxies else None)
-                print('[LOGIN]', 'Logging-in...')
+                logging.info(msg='[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'], True)
-                prGreen('[LOGIN] Logged-in successfully !')
+                logging.info(msg='[LOGIN] Logged-in successfully !')
                 if LOGS[account['username']]['PC searches'] and ERROR:
                     startingPoints = POINTS_COUNTER
                     browser.get('https://rewards.microsoft.com/dashboard')
                     remainingSearches, remainingSearchesM = getRemainingSearches(browser)
                 if remainingSearchesM != 0:
-                    print('[BING]', 'Starting Mobile Bing searches...')
+                    logging.info(msg='[BING]', 'Starting Mobile Bing searches...')
                     bingSearches(browser, remainingSearchesM, True)
-                prGreen('[BING] Finished Mobile Bing searches !')
+                logging.info(msg='[BING] Finished Mobile Bing searches !')
                 browser.quit()
                 
             New_points = POINTS_COUNTER - startingPoints
-            prGreen('[POINTS] You have earned ' + str(New_points) + ' points today !')
-            prGreen('[POINTS] You are now at ' + str(POINTS_COUNTER) + ' points !\n')
+            logging.info(msg='[POINTS] You have earned ' + str(New_points) + ' points today !')
+            logging.info(msg=[POINTS] You are now at ' + str(POINTS_COUNTER) + ' points !\n')
             
             FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
             LOGS[CURRENT_ACCOUNT]["Today's points"] = New_points
@@ -1774,9 +1783,11 @@ def main():
     delta = end - start
     hour, remain = divmod(delta, 3600)
     min, sec = divmod(remain, 60)
-    print(f"The script took : {hour:02.0f}:{min:02.0f}:{sec:02.0f}")
+    logging.info(msg=f"The script took : {hour:02.0f}:{min:02.0f}:{sec:02.0f}")
     LOGS["Elapsed time"] = f"{hour:02.0f}:{min:02.0f}:{sec:02.0f}"
     updateLogs()
           
 if __name__ == '__main__':
+    subprocess.Popen(["python3", "alive.py"])
+    init_logging()
     main()
