@@ -38,6 +38,7 @@ ADD ./ms_rewards_farmer.py .
 ADD ./entrypoint.sh .
 ADD ./keep_alive.py .
 ADD ./accounts.json .
+ADD ./alive.py .
 
 
 # Make the entrypoint executable
