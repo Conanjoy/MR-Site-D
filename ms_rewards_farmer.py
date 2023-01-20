@@ -1637,7 +1637,7 @@ def send_apprise_alert():
 	
 	alerts = apprise.Apprise()
 	alerts.add(APPRISE_ALERTS)
-	with open("Logs_accounts.txt", "r+") as file:
+	with open("logs.txt", "r+") as file:
 		LOG = file.read()
 	alerts.notify(title=f"{BOT_NAME}", body=f"{LOG}")
 
@@ -1657,11 +1657,11 @@ def farmer():
             prYellow('********************' + CURRENT_ACCOUNT + '********************')
             if not LOGS[CURRENT_ACCOUNT]['PC searches']:
                 browser = browserSetup(False, PC_USER_AGENT, random.choice(ARGS.proxies) if ARGS.proxies else None)
-                logging.info(msg='[LOGIN] Logging-in...')
+                print('[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'])
-                logging.info(msg='[LOGIN] Logged-in successfully !')
+                prGreen('[LOGIN] Logged-in successfully !')
                 startingPoints = POINTS_COUNTER
-                logging.info(msg='[POINTS] You have ' + str(POINTS_COUNTER) + ' points on your account !')
+                prGreen('[POINTS] You have ' + str(POINTS_COUNTER) + ' points on your account !')
                 browser.get('https://rewards.microsoft.com/dashboard')
                 if not LOGS[CURRENT_ACCOUNT]['Daily']:
                     completeDailySet(browser)
@@ -1672,9 +1672,9 @@ def farmer():
                 remainingSearches, remainingSearchesM = getRemainingSearches(browser)
                 MOBILE = bool(remainingSearchesM)
                 if remainingSearches != 0:
-                    logging.info(msg='[BING] Starting Desktop and Edge Bing searches...')
+                    print('[BING]', 'Starting Desktop and Edge Bing searches...')
                     bingSearches(browser, remainingSearches)
-                    logging.info(msg='[BING] Finished Desktop and Edge Bing searches !')
+                    prGreen('[BING] Finished Desktop and Edge Bing searches !')
                     LOGS[CURRENT_ACCOUNT]['PC searches'] = True
                     updateLogs()
                     ERROR = False
@@ -1693,22 +1693,22 @@ def farmer():
 
             if MOBILE:
                 browser = browserSetup(True, account.get('mobile_user_agent', MOBILE_USER_AGENT), random.choice(ARGS.proxies) if ARGS.proxies else None)
-                logging.info(msg='[LOGIN] Logging-in...')
+                print('[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'], True)
-                logging.info(msg='[LOGIN] Logged-in successfully !')
+                prGreen('[LOGIN] Logged-in successfully !')
                 if LOGS[account['username']]['PC searches'] and ERROR:
                     startingPoints = POINTS_COUNTER
                     browser.get('https://rewards.microsoft.com/dashboard')
                     remainingSearches, remainingSearchesM = getRemainingSearches(browser)
                 if remainingSearchesM != 0:
-                    logging.info(msg='[BING] Starting Mobile Bing searches...')
+                    print('[BING]', 'Starting Mobile Bing searches...')
                     bingSearches(browser, remainingSearchesM, True)
-                logging.info(msg='[BING] Finished Mobile Bing searches !')
+                prGreen('[BING] Finished Mobile Bing searches !')
                 browser.quit()
                 
             New_points = POINTS_COUNTER - startingPoints
-            logging.info(msg='[POINTS] You have earned ' + str(New_points) + ' points today !')
-            logging.info(msg='[POINTS] You are now at ' + str(POINTS_COUNTER) + ' points !\n')
+            prGreen('[POINTS] You have earned ' + str(New_points) + ' points today !')
+            prGreen('[POINTS] You are now at ' + str(POINTS_COUNTER) + ' points !\n')
             
             FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
             LOGS[CURRENT_ACCOUNT]["Today's points"] = New_points
