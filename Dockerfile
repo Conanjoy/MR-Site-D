@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y \
   gpg \
   python3 \ 
   python3-pip \
-  chromium-chromedriver \
   xvfb \
   xfonts-cyrillic \
   xfonts-100dpi \
@@ -33,7 +32,6 @@ RUN apt-get update && apt-get -y install google-chrome-stable && rm -rf /var/lib
 ADD ./requirements.txt .
 RUN pip3 install -r ./requirements.txt
 
-RUN pip3 uninstall --yes chardet && pip3 uninstall --yes urllib3 && pip3 install --upgrade requests --no-input
 
 # Add often-changed files in order to cache above
 ADD ./ms_rewards_farmer.py .

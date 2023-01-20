@@ -12,3 +12,4 @@ random-word==1.0.7
 flask
 apprise
 webdriver-manager
+packaging

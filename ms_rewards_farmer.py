@@ -1,48 +1,53 @@
-import time
 import json
-from datetime import date, timedelta, datetime
-import requests
-import random
-import urllib.parse
-import ipapi
 import os
-import apprise
-from random_word import RandomWords
-from func_timeout import func_set_timeout, FunctionTimedOut
-import subprocess
 import platform
-from argparse import ArgumentParser
+import random
+import subprocess
 import sys
+import time
+import urllib.parse
+from pathlib import Path
+from argparse import ArgumentParser
+from datetime import date, datetime, timedelta
+import traceback
 from keep_alive import keep_alive
-import logging
+import apprise
 
-from pyvirtualdisplay import Display
+import ipapi
+import requests
+from func_timeout import FunctionTimedOut, func_set_timeout
+from random_word import RandomWords
+
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium import webdriver
+from selenium.common.exceptions import (ElementNotInteractableException,
+                                        NoAlertPresentException,
+                                        NoSuchElementException,
+                                        SessionNotCreatedException,
+                                        TimeoutException,
+                                        UnexpectedAlertPresentException)
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (NoSuchElementException, TimeoutException, ElementNotInteractableException, 
-                                        UnexpectedAlertPresentException, NoAlertPresentException, SessionNotCreatedException)
+from selenium.webdriver.support import expected_conditions as ec
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.chrome.options import Options
+
+from pyvirtualdisplay import Display
+import zipfile
+
+from email.message import EmailMessage
+import ssl
+import smtplib
 
 # Define user-agents
-PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.5195.102 Safari/537.36 Edg/105.0.1343.33'
-MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.5195.102 Mobile Safari/537.36'
+PC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.24'
+MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 12; SM-N9750) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36 EdgA/107.0.1418.28'
 
-def init_logging(log_level="INFO"):
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s :: %(levelname)-6s :: %(name)s :: %(message)s',
-        handlers=[
-            logging.StreamHandler()
-        ])
-print = logging.info
-
-POINTS_COUNTER = 0
+keep_alive()
 
 # Global variables
+POINTS_COUNTER = 0
 FINISHED_ACCOUNTS = [] # added accounts when finished or those have same date as today date in LOGS at beginning.
 ERROR = True # A flag for when error occurred.
 MOBILE = True # A flag for when the account has mobile bing search, it is useful for accounts level 1 to pass mobile.
@@ -50,43 +55,113 @@ CURRENT_ACCOUNT = None # save current account into this variable when farming.
 LOGS = {} # Dictionary of accounts to write in 'logs_accounts.txt'.
 FAST = False # When this variable set True then all possible delays reduced.
 
-keep_alive()
-
-
 # Define browser setup function
-def browserSetup(isMobile: bool, user_agent: str = PC_USER_AGENT) -> WebDriver:
+def browserSetup(isMobile: bool, user_agent: str = PC_USER_AGENT, proxy: str = None) -> WebDriver:
     # Create Chrome browser
-    from selenium.webdriver.chrome.options import Options
     options = Options()
     if ARGS.session:
         if not isMobile:
-            options.add_argument(rf'--user-data-dir={os.path.join(os.getcwd()+"/Profiles/" + CURRENT_ACCOUNT, "PC")}')
+            options.add_argument(f'--user-data-dir={Path(__file__).parent}/Profiles/{CURRENT_ACCOUNT}/PC')
         else:
-            options.add_argument(rf'--user-data-dir={os.path.join(os.getcwd()+"/Profiles/" + CURRENT_ACCOUNT, "Mobile")}')
+            options.add_argument(f'--user-data-dir={Path(__file__).parent}/Profiles/{CURRENT_ACCOUNT}/Mobile')
     options.add_argument("user-agent=" + user_agent)
     options.add_argument('lang=' + LANG.split("-")[0])
     options.add_argument('--disable-blink-features=AutomationControlled')
-    prefs = {"profile.default_content_setting_values.geolocation" :2,
+    prefs = {"profile.default_content_setting_values.geolocation": 2,
             "credentials_enable_service": False,
             "profile.password_manager_enabled": False,
             "webrtc.ip_handling_policy": "disable_non_proxied_udp",
             "webrtc.multiple_routes_enabled": False,
             "webrtc.nonproxied_udp_enabled" : False}
-    options.add_experimental_option("prefs",prefs)
+    options.add_experimental_option("prefs", prefs)
     options.add_experimental_option("useAutomationExtension", False)
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    if ARGS.headless:
+    if ARGS.headless and not ARGS.authproxies:
         options.add_argument("--headless")
     options.add_argument('log-level=3')
     options.add_argument("--start-maximized")
     if platform.system() == 'Linux':
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+    if proxy and not ARGS.authproxies:
+        options.add_argument(f"--proxy-server={proxy}")
+    
+    if proxy and ARGS.authproxies:
+        # Create extension that will authenticate our proxies for us
+        
+        # Auth proxy format: hostname:port:username:password
+        proxy_info = proxy.split(":")
+        proxy_hostname = proxy_info[0]
+        proxy_port = proxy_info[1]
+        proxy_username = proxy_info[2]
+        proxy_password = proxy_info[3]
+        
+        extension = 'proxy_auth_extension.zip'
+        
+        manifest_json = """
+        {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "Chrome Proxy",
+            "permissions": [
+                "proxy",
+                "tabs",
+                "unlimitedStorage",
+                "storage",
+                "<all_urls>",
+                "webRequest",
+                "webRequestBlocking"
+            ],
+            "background": {
+                "scripts": ["background.js"]
+            },
+            "minimum_chrome_version":"22.0.0"
+        }
+        """
+        
+        background_js = """
+        var config = {
+                mode: "fixed_servers",
+                rules: {
+                singleProxy: {
+                    scheme: "http",
+                    host: "%s",
+                    port: parseInt(%s)
+                },
+                bypassList: ["localhost"]
+                }
+            };
+
+        chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+
+        function callbackFn(details) {
+            return {
+                authCredentials: {
+                    username: "%s",
+                    password: "%s"
+                }
+            };
+        }
+
+        chrome.webRequest.onAuthRequired.addListener(
+                    callbackFn,
+                    {urls: ["<all_urls>"]},
+                    ['blocking']
+        );
+        """ % (proxy_hostname, proxy_port, proxy_username, proxy_password)
+
+        with zipfile.ZipFile(extension, 'w') as zp:
+            zp.writestr("manifest.json", manifest_json)
+            zp.writestr("background.js", background_js)
+        options.add_extension(extension)
+        
+    chrome_browser_obj = None
     try:
         chrome_browser_obj = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     except Exception:
         chrome_browser_obj = webdriver.Chrome(options=options)
-    return chrome_browser_obj
+    finally:
+        return chrome_browser_obj
 
 # Define login function
 def login(browser: WebDriver, email: str, pwd: str, isMobile: bool = False):
@@ -118,9 +193,24 @@ def login(browser: WebDriver, email: str, pwd: str, isMobile: bool = False):
         elif browser.title == 'Your account has been temporarily suspended':
             LOGS[CURRENT_ACCOUNT]['Last check'] = 'Your account has been locked !'
             FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
+            # Sends email if the account is locked
+            if ARGS.emailalerts:
+                prRed("[EMAIL SENDER] This account has been locked! Sending email...")
+                send_email(CURRENT_ACCOUNT, "lock")
             updateLogs()
             cleanLogs()
             raise Exception(prRed('[ERROR] Your account has been locked !'))
+        elif isElementExists(browser, By.ID, 'mectrl_headerPicture') or 'Sign In or Create' in browser.title:
+            if isElementExists(browser, By.ID, 'i0118'):
+                browser.find_element(By.ID, "i0118").send_keys(pwd)
+                time.sleep(2)
+                browser.find_element(By.ID, 'idSIButton9').click()
+                time.sleep(5)
+                prGreen('[LOGIN] Account logged in again !')
+                RewardsLogin(browser)
+                print('[LOGIN]', 'Ensuring login on Bing...')
+                checkBingLogin(browser, isMobile)
+                return
     # Wait complete loading
     waitUntilVisible(browser, By.ID, 'loginHeader', 10)
     # Enter email
@@ -156,23 +246,36 @@ def login(browser: WebDriver, email: str, pwd: str, isMobile: bool = False):
         if browser.title == "Your account has been temporarily suspended" or isElementExists(browser, By.CLASS_NAME, "serviceAbusePageContainer  PageContainer"):
             LOGS[CURRENT_ACCOUNT]['Last check'] = 'Your account has been locked !'
             FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
+            if ARGS.emailalerts:
+                prRed("[EMAIL SENDER] This account has been locked! Sending email...")
+                send_email(CURRENT_ACCOUNT, "lock")
             updateLogs()
             cleanLogs()
             raise Exception(prRed('[ERROR] Your account has been locked !'))
         elif browser.title == "Help us protect your account":
             prRed('[ERROR] Unusual activity detected !')
             LOGS[CURRENT_ACCOUNT]['Last check'] = 'Unusual activity detected !'
-            FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)       
+            FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
+            if ARGS.emailalerts:
+                prRed("[EMAIL SENDER] This account has been locked! Sending email...")
+                send_email(CURRENT_ACCOUNT, "lock")
             updateLogs()
             cleanLogs()
-            input('Press any key to close...')
             os._exit(0)
         else:
-            LOGS[CURRENT_ACCOUNT]['Last check'] = 'Unknown error !'
-            FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
-            updateLogs()
-            cleanLogs()
-            raise Exception(prRed('[ERROR] Unknown error !'))
+            # Check if a second chance has already been given
+            if LOGS[CURRENT_ACCOUNT]['Last check'] == 'Unknown error !':
+                FINISHED_ACCOUNTS.append(CURRENT_ACCOUNT)
+                updateLogs()
+                cleanLogs()
+                raise Exception(prRed('[ERROR] Unknown error !'))
+            else:
+                LOGS[CURRENT_ACCOUNT]['Last check'] = 'Unknown error !'
+                updateLogs()
+            
+                # Log in again (second chance)
+                login(browser, email, pwd, isMobile)
+                return
     # Wait 5 seconds
     time.sleep(5)
     # Click Security Check
@@ -225,7 +328,8 @@ def RewardsLogin(browser: WebDriver):
         # Check whether Rewards is available in your region or not
         elif browser.find_element(By.XPATH, '//*[@id="error"]/h1').get_attribute('innerHTML') == 'Microsoft Rewards is not available in this country or region.':
             prRed('[ERROR] Microsoft Rewards is not available in this country or region !')
-            input('[ERROR] Press any key to close...')
+            if sys.stdout.isatty():
+                input('[ERROR] Press any key to close...')
             os._exit()
     except NoSuchElementException:
         pass
@@ -241,7 +345,15 @@ def checkBingLogin(browser: WebDriver, isMobile: bool = False):
     if ARGS.session:
         try:
             if not isMobile:
-                POINTS_COUNTER = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+                try:
+                    POINTS_COUNTER = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+                except ValueError:
+                    if browser.find_element(By.ID, 'id_s').is_displayed():
+                        browser.find_element(By.ID, 'id_s').click()
+                        time.sleep(15)
+                        checkBingLogin(browser, isMobile)
+                    time.sleep(2)
+                    POINTS_COUNTER = int(browser.find_element(By.ID, "id_rc").get_attribute("innerHTML").replace(",", ""))
             else:
                 browser.find_element(By.ID, 'mHamburger').click()
                 time.sleep(1)
@@ -256,6 +368,12 @@ def checkBingLogin(browser: WebDriver, isMobile: bool = False):
     except:
         pass
     if isMobile:
+        # close bing app banner
+        if isElementExists(browser, By.ID, 'bnp_rich_div'):
+            try:
+                browser.find_element(By.XPATH, '//*[@id="bnp_bop_close_icon"]/img').click()
+            except NoSuchElementException:
+                pass
         try:
             time.sleep(1)
             browser.find_element(By.ID, 'mHamburger').click()
@@ -302,9 +420,12 @@ def checkBingLogin(browser: WebDriver, isMobile: bool = False):
             try:
                 POINTS_COUNTER = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
             except:
-                browser.find_element(By.ID, 'id_s').click()
-                time.sleep(15 if not FAST else 7)
-                checkBingLogin(browser, isMobile)
+                if browser.find_element(By.ID, 'id_s').is_displayed():
+                    browser.find_element(By.ID, 'id_s').click()
+                    time.sleep(15)
+                    checkBingLogin(browser, isMobile)
+                time.sleep(5)
+                POINTS_COUNTER = int(browser.find_element(By.ID, "id_rc").get_attribute("innerHTML").replace(",", ""))
         else:
             try:
                 browser.find_element(By.ID, 'mHamburger').click()
@@ -320,8 +441,6 @@ def checkBingLogin(browser: WebDriver, isMobile: bool = False):
             time.sleep(1)
             POINTS_COUNTER = int(browser.find_element(By.ID, 'fly_id_rc').get_attribute('innerHTML'))
     except:
-        print("[WARN]", "Failure to load point counter")
-        return
         checkBingLogin(browser, isMobile)
 
 def waitUntilVisible(browser: WebDriver, by_: By, selector: str, time_to_wait: int = 10):
@@ -480,7 +599,10 @@ def bingSearch(browser: WebDriver, word: str, isMobile: bool):
     points = 0
     try:
         if not isMobile:
-            points = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+            try:
+                points = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML'))
+            except ValueError:
+                points = int(browser.find_element(By.ID, 'id_rc').get_attribute('innerHTML').replace(",", ""))
         else:
             try :
                 browser.find_element(By.ID, 'mHamburger').click()
@@ -701,10 +823,12 @@ def getDashboardData(browser: WebDriver) -> dict:
     return dashboard
 
 def completeDailySet(browser: WebDriver):
-    d = getDashboardData(browser)['dailySetPromotions']
+    print('[DAILY SET]', 'Trying to complete the Daily Set...')
+    d = getDashboardData(browser)
+    error = False
     todayDate = datetime.today().strftime('%m/%d/%Y')
     todayPack = []
-    for date, data in d.items():
+    for date, data in d['dailySetPromotions'].items():
         if date == todayDate:
             todayPack = data
     for activity in todayPack:
@@ -735,7 +859,14 @@ def completeDailySet(browser: WebDriver):
                             print('[DAILY SET]', 'Completing quiz of card ' + str(cardNumber))
                             completeDailySetVariableActivity(browser, cardNumber)
         except:
+            error = True
             resetTabs(browser)
+    if not error:
+        prGreen("[DAILY SET] Completed the Daily Set successfully !")
+    else:
+        prYellow("[DAILY SET] Daily Set did not completed successfully ! Streak not increased")
+    LOGS[CURRENT_ACCOUNT]['Daily'] = True
+    updateLogs()      
 
 def getAccountPoints(browser: WebDriver) -> int:
     return getDashboardData(browser)['userStatus']['availablePoints']
@@ -797,6 +928,7 @@ def completePunchCard(browser: WebDriver, url: str, childPromotions: dict):
                 break
                 
 def completePunchCards(browser: WebDriver):
+    print('[PUNCH CARDS]', 'Trying to complete the Punch Cards...')
     punchCards = getDashboardData(browser)['punchCards']
     for punchCard in punchCards:
         try:
@@ -818,6 +950,9 @@ def completePunchCards(browser: WebDriver):
     time.sleep(2)
     browser.get('https://rewards.microsoft.com/dashboard/')
     time.sleep(2)
+    LOGS[CURRENT_ACCOUNT]['Punch cards'] = True
+    updateLogs()
+    prGreen('[PUNCH CARDS] Completed the Punch Cards successfully !')
 
 def completeMorePromotionSearch(browser: WebDriver, cardNumber: int):
     browser.find_element(By.XPATH, f'//*[@id="app-host"]/ui-view/mee-rewards-dashboard/main/div/mee-rewards-more-activities-card/mee-card-group/div/mee-card[{str(cardNumber)}]/div/card-content/mee-rewards-more-activities-card-item/div/a/div/span').click()
@@ -930,6 +1065,7 @@ def completeMorePromotionThisOrThat(browser: WebDriver, cardNumber: int):
     time.sleep(2)
 
 def completeMorePromotions(browser: WebDriver):
+    print('[MORE PROMO]', 'Trying to complete More Promotions...')
     morePromotions = getDashboardData(browser)['morePromotions']
     i = 0
     for promotion in morePromotions:
@@ -953,6 +1089,9 @@ def completeMorePromotions(browser: WebDriver):
                 completeMorePromotionSearch(browser, i)
         except:
             resetTabs(browser)
+    LOGS[CURRENT_ACCOUNT]['More promotions'] = True
+    updateLogs()
+    prGreen('[MORE PROMO] Completed More Promotions successfully !')
 
 def getRemainingSearches(browser: WebDriver):
     dashboard = getDashboardData(browser)
@@ -1002,14 +1141,12 @@ def validateTime(time: str):
         return t
 
 def argumentParser():
-    '''
-    getting args from command line (--everyday [time:(HH:MM)], --session, --headless)
-    '''
+    '''getting args from command line'''
     parser = ArgumentParser(description="Microsoft Rewards Farmer V2.1", 
-                                    allow_abbrev=False, 
-                                    usage="You may use execute the program with the default config or use arguments to configure available options.")
+                            allow_abbrev=False, 
+                            usage="You may use execute the program with the default config or use arguments to configure available options.")
     parser.add_argument('--everyday', 
-                        metavar=None,
+                        metavar='HH:MM',
                         help='[Optional] This argument takes an input as time in 24h format (HH:MM) to execute the program at the given time everyday.', 
                         type=str, 
                         required=False)
@@ -1029,6 +1166,32 @@ def argumentParser():
                         help="[Optional] Reduce delays where ever it's possible to make script faster.",
                         action='store_true',
                         required=False)
+    parser.add_argument('--accounts',
+                        help='[Optional] Add accounts.',
+                        nargs="*",
+                        required=False)
+    parser.add_argument('--proxies',
+                        help='[Optional] Add proxies.',
+                        nargs="*",
+                        required=False)
+    parser.add_argument('--authproxies',
+                        help="[Optional] Only use if your proxies require authentication. Format -> hostname:port:username:password",
+                        action='store_true',
+                        required=False)
+    parser.add_argument('--privacy',
+                        help='[Optional] Enable privacy mode.',
+                        action='store_true',
+                        required=False)
+    parser.add_argument(
+        "--emailalerts",
+        help="[Optional] Enable GMAIL email alerts.",
+        action="store_true",
+        required=False)
+    parser.add_argument(
+        "--redeem",
+        help="[Optional] Enable auto-redeem rewards based on accounts.json goals.",
+        action="store_true",
+        required=False)
     args = parser.parse_args()
     if args.everyday:
         if isinstance(validateTime(args.everyday), str):
@@ -1040,6 +1203,9 @@ def argumentParser():
         FAST = True
     if len(sys.argv) > 1:
         for arg in vars(args):
+            if "accounts" in arg or "proxies" in arg:
+                if args.privacy:
+                    continue
             prBlue(f"[INFO] {arg} : {getattr(args, arg)}")
     return args
 
@@ -1051,7 +1217,7 @@ def logs():
     shared_items =[]
     try:
         # Read datas on 'logs_accounts.txt'
-        LOGS = json.load(open(f"Logs_{filename}.txt", "r"))
+        LOGS = json.load(open(f"logs.txt", "r"))
         # sync accounts and logs file for new accounts or remove accounts from logs.
         for user in ACCOUNTS:
             shared_items.append(user['username'])
@@ -1081,7 +1247,7 @@ def logs():
         updateLogs()               
         prGreen('\n[LOGS] Logs loaded successfully.\n')
     except FileNotFoundError:
-        prRed(f'\n[LOGS] "Logs_{filename}.txt" file not found.')
+        prRed(f'\n[LOGS] "logs.txt" file not found.')
         LOGS = {}
         for account in ACCOUNTS:
             LOGS[account["username"]] = {"Last check": "",
@@ -1092,11 +1258,11 @@ def logs():
                                         "More promotions": False,
                                         "PC searches": False}
         updateLogs()
-        prGreen(f'[LOGS] "Logs_{filename}.txt" created.\n')
+        prGreen(f'[LOGS] "logs.txt" created.\n')
         
 def updateLogs():
     global LOGS
-    with open(f'Logs_{filename}.txt', 'w') as file:
+    with open(f'logs.txt', 'w') as file:
         file.write(json.dumps(LOGS, indent = 4))
 
 def cleanLogs():
@@ -1129,27 +1295,333 @@ def prBlue(prt):
 def prPurple(prt):
     print(f"\033[95m{prt}\033[00m")
 
-def logo():
-    prRed("")
-    prPurple("            by @Charlesbel upgraded by @Farshadz1997        version 2.1\n")
 
-try:
-    account_path = os.path.dirname(os.path.abspath(__file__)) + '/accounts.json'
-    filename, ext = os.path.splitext(os.path.basename(account_path))
-    ACCOUNTS = json.load(open(account_path, "r"))
-except FileNotFoundError:
-    with open(account_path, 'w') as f:
-        f.write(json.dumps([{
-            "username": "Your Email",
-            "password": "Your Password"
-        }], indent=4))
-    prPurple(f"""
-[ACCOUNT] Accounts credential file "{filename}{ext}" created.
-[ACCOUNT] Edit with your credentials and save, then press any key to continue...
-    """)
-    input()
-    ACCOUNTS = json.load(open(account_path, "r"))
+def loadAccounts():
+    global ACCOUNTS
+    if ARGS.accounts:
+        ACCOUNTS = []
+        for account in ARGS.accounts:
+            ACCOUNTS.append({"username": account.split(":")[0], "password": account.split(":")[1]})
+    else:
+        try:
+            ACCOUNTS = json.load(open("accounts.json", "r"))
+        except FileNotFoundError:
+            with open("accounts.json", 'w') as f:
+                f.write(json.dumps([{
+                    "username": "Your Email",
+                    "password": "Your Password"
+                }], indent=4))
+            prPurple(f"""
+        [ACCOUNT] Accounts credential file "accounts.json" created.
+        [ACCOUNT] Edit with your credentials and save, then press any key to continue...
+            """)
+            input()
+            ACCOUNTS = json.load(open("accounts.json", "r"))
+
+def send_email(account, type):
+    email_info = []
+    try:
+        email_info = json.load(open("email.json", "r"))
+    except FileNotFoundError:
+        with open("email.json", "w") as f:
+            f.write(
+                json.dumps(
+                    [
+                        {
+                            "sender": "sender@example.com",
+                            "password": "GoogleAppPassword",
+                            "receiver": "receiver@example.com",
+                            "withdrawal": "true",
+                            "lock": "true",
+                            "ban": "true",
+                            "phoneverification": "true",
+                            "proxyfail": "false",
+                        }
+                    ],
+                    indent=4,
+                )
+            )
+
+    email_sender = email_info[0]["sender"]
+    email_password = email_info[0]["password"]
+    email_receiver = email_info[0]["receiver"]
     
+    if type == "withdrawal":
+        if email_info[0]["withdrawal"] == "false":
+            return
+        email_subject = account + " has redeemed a card in Microsoft Rewards!"
+        email_body = "Check that account's mail!"
+        
+    elif type == "lock":
+        if email_info[0]["lock"] == "false":
+            return
+        email_subject = account + " has been locked from Microsoft Rewards!"
+        email_body = "Fix it by logging in through this link: https://rewards.microsoft.com/"
+        
+    elif type == "ban":
+        if email_info[0]["ban"] == "false":
+                return
+        email_subject = account + " has been shadow banned from Microsoft Rewards!"
+        email_body = "You can either close your account or try contacting support: https://support.microsoft.com/en-US"
+        
+    elif type == "phoneverification":
+        if email_info[0]["phoneverification"] == "false":
+                return
+        email_subject = account + " needs phone verification for redeeming rewards!"
+        email_body = "Fix it by manually redeeming a reward: https://rewards.microsoft.com/"
+    elif type == "proxyfail":
+        if email_info[0]["proxyfail"] == "false":
+                return
+        email_subject = "Proxies are not working properly!"
+        email_body = "This can happen if proxies have stopped working or if they have not been properly set (check proxy format)."
+    else:
+        return
+
+    email_message = EmailMessage()
+    email_message["From"] = email_sender
+    email_message["To"] = email_receiver
+    email_message["Subject"] = email_subject
+    email_message.set_content(email_body)
+
+    ssl_context = ssl.create_default_context()
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl_context) as smtp:
+        try:
+            smtp.login(email_sender, email_password)
+        except:
+            return
+        smtp.sendmail(email_sender, email_receiver, email_message.as_string())
+
+def redeem(browser, goal):
+    goal = goal.lower()
+    browser.get("https://rewards.microsoft.com/")
+    try:
+        goal_name = browser.find_element(
+            By.XPATH,
+            value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/h3",
+        )
+
+        goal_progress = browser.find_element(
+            By.XPATH,
+            value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/p",
+        )
+
+        # If goal is not set or is not the specified one, then set/change it
+        if "/" not in goal_progress.text.lower() or goal not in goal_name.text.lower():
+            # If we need to change it, it is mandatory to refresh the set goal button
+            if "/" in goal_progress.text.lower() and goal not in goal_name.text.lower():
+                # Check if unspecified goal has reached 100%
+                goal_progress = (
+                    browser.find_element(
+                        By.XPATH,
+                        value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/p",
+                    )
+                    .text.replace(" ", "")
+                    .split("/")
+                )
+                points = int(goal_progress[0].replace(",", ""))
+                total = int(goal_progress[1].replace(",", ""))
+
+                if points == total:
+                    # Choose remove goal element instead of redeem now
+                    element = browser.find_element(
+                        By.XPATH,
+                        value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a[2]/span/ng-transclude",
+                    )
+                else:
+                    element = browser.find_element(
+                        By.XPATH,
+                        value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a/span/ng-transclude",
+                    )
+
+                element.click()
+                time.sleep(3)
+                element = browser.find_element(
+                    By.XPATH,
+                    value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a/span/ng-transclude",
+                )
+            else:
+                element = browser.find_element(
+                    By.XPATH,
+                    value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a/span/ng-transclude",
+                )
+            element.click()
+            time.sleep(3)
+            elements = browser.find_elements(By.CLASS_NAME, "c-image")
+            goal_found = False
+            for e in elements:
+                if goal in e.get_attribute("alt").lower():
+                    e.click()
+                    goal_found = True
+                    break
+
+            if not goal_found:
+                prRed(
+                    "[REDEEM] Specified goal not found! Search for any typos in your accounts.json..."
+                )
+                return
+
+    except:
+        print(traceback.format_exc())
+        prRed("[REDEEM] Ran into an exception trying to redeem!")
+        return
+    finally:
+        browser.get("https://rewards.microsoft.com/")
+    try:
+        goal_progress = browser.find_element(
+            By.XPATH,
+            value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/p",
+        ).text
+
+        # Retries goal setting if for some reason it has failed (happens sheldomly)
+        if not "/" in goal_progress:
+            redeem(browser, goal)
+            return
+        else:
+            goal_progress = goal_progress.replace(" ", "").split("/")
+
+        points = int(goal_progress[0].replace(",", ""))
+        total = int(goal_progress[1].replace(",", ""))
+
+        goal = browser.find_element(
+            By.XPATH,
+            value='//*[@id="dashboard-set-goal"]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/h3',
+        ).text
+
+        if points < total:
+            print(
+                "[REDEEM] " + str(total - points) + " points left to redeem your goal!"
+            )
+            return
+        elif points >= total:
+            print("[REDEEM] points are ready to be redeemed!")
+    except Exception as e:
+        print(traceback.format_exc())
+        prRed("[REDEEM] Ran into an exception trying to redeem!")
+        return
+    try:
+        try:
+            browser.find_element(
+                By.XPATH,
+                value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a[1]/span/ng-transclude",
+            ).click()
+            time.sleep(random.uniform(5, 7))
+        except:
+            browser.find_element(
+                By.XPATH,
+                value="/html/body/div[1]/div[2]/main/div/ui-view/mee-rewards-dashboard/main/div/mee-rewards-redeem-info-card/div/mee-card-group/div/div[1]/mee-card/div/card-content/mee-rewards-redeem-goal-card/div/div[2]/div/a[1]",
+            ).click()
+            time.sleep(random.uniform(5, 7))
+        try:
+            url = browser.current_url
+            url = url.split("/")
+            id = url[-1]
+            try:
+                browser.find_element(
+                    By.XPATH, value=f'//*[@id="redeem-pdp_{id}"]'
+                ).click()
+                time.sleep(random.uniform(5, 7))
+            except:
+                browser.find_element(
+                    By.XPATH, value=f'//*[@id="redeem-pdp_{id}"]/span[1]'
+                ).click()
+                
+            # If a cookie consent container is present, we need to accept
+            # those cookies to be able to redeem the reward
+            if browser.find_elements(By.ID, value="wcpConsentBannerCtrl"):
+                browser.find_element(
+                    By.XPATH, value="/html/body/div[3]/div/div[2]/button[1]"
+                ).click()
+                time.sleep(random.uniform(2, 4))
+            
+            try:
+                browser.find_element(
+                    By.XPATH, value='//*[@id="redeem-checkout-review-confirm"]'
+                ).click()
+                time.sleep(random.uniform(2, 4))
+            except:
+                browser.find_element(
+                    By.XPATH, value='//*[@id="redeem-checkout-review-confirm"]/span[1]'
+                ).click()
+        except Exception as e:
+            browser.get("https://rewards.microsoft.com/")
+            print(traceback.format_exc())
+            prRed("[REDEEM] Ran into an exception trying to redeem!")
+            return
+        # Handle phone verification landing page
+        try:
+            veri = browser.find_element(
+                By.XPATH, value='//*[@id="productCheckoutChallenge"]/form/div[1]'
+            ).text
+            if veri.lower() == "phone verification":
+                prRed("[REDEEM] Phone verification required!")
+                if ARGS.emailalerts:
+                    prRed(
+                        "[EMAIL SENDER] Phone verification is required for redeeming a reward in this account! Sending email..."
+                    )
+                    send_email(CURRENT_ACCOUNT, "phoneverification")
+                return
+        except:
+            pass
+        finally:
+            time.sleep(random.uniform(2, 4))
+        try:
+            error = browser.find_element(
+                By.XPATH, value='//*[@id="productCheckoutError"]/div/div[1]'
+            ).text
+            if "issue with your account or order" in error.lower():
+                message = f"\n[REDEEM] {CURRENT_ACCOUNT} has encountered the following message while attempting to auto-redeem rewards:\n{error}\nUnfortunately, this likely means this account has been shadow-banned. You may test your luck and contact support or just close the account and try again on another account."
+                prRed(message)
+                # Send shadow ban email
+                if ARGS.emailalerts:
+                    prRed(
+                        "[EMAIL SENDER] This account has been banned! Sending email..."
+                    )
+                    send_email(CURRENT_ACCOUNT, "ban")
+                return
+        except:
+            pass
+
+        prGreen("[REDEEM] " + CURRENT_ACCOUNT + " points redeemed!")
+        if ARGS.emailalerts:
+            prGreen(
+                "[EMAIL SENDER] This account has redeemed a reward! Sending email..."
+            )
+            send_email(CURRENT_ACCOUNT, "withdrawal")
+        return
+    except Exception as e:
+        print(traceback.format_exc())
+        prRed("[REDEEM] Ran into an exception trying to redeem!")
+        return
+
+def remove_malfunctioning_proxies():
+    malfunctioning_proxies = []
+    
+    # Get original IP
+    og_browser = browserSetup(False, PC_USER_AGENT, None)
+    og_browser.get("https://ipecho.net/plain")
+    og_ip = og_browser.find_element(By.XPATH, value='/html/body').text
+    og_browser.quit()
+    
+    # Check that every proxy has a different IP
+    for proxy in ARGS.proxies:
+        try:
+            # Get proxy IP
+            proxy_browser = browserSetup(False, PC_USER_AGENT, proxy)
+            proxy_browser.get("https://ipecho.net/plain")
+            proxy_ip = proxy_browser.find_element(By.XPATH, value='/html/body').text
+            proxy_browser.quit()
+            
+            if og_ip == proxy_ip:
+                malfunctioning_proxies.append(proxy)
+        except Exception:
+            malfunctioning_proxies.append(proxy)
+        finally:
+            continue
+        
+    for malfunctioning_proxy in malfunctioning_proxies:
+        ARGS.proxies.remove(malfunctioning_proxy)
+
 def send_apprise_alert():
 	BOT_NAME = os.environ.get("BOT_NAME")
 	APPRISE_ALERTS = os.environ.get("APPRISE_ALERTS")
@@ -1175,7 +1647,7 @@ def farmer():
                 updateLogs()
             prYellow('********************' + CURRENT_ACCOUNT + '********************')
             if not LOGS[CURRENT_ACCOUNT]['PC searches']:
-                browser = browserSetup(False, PC_USER_AGENT)
+                browser = browserSetup(False, PC_USER_AGENT, random.choice(ARGS.proxies) if ARGS.proxies else None)
                 print('[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'])
                 prGreen('[LOGIN] Logged-in successfully !')
@@ -1183,25 +1655,13 @@ def farmer():
                 prGreen('[POINTS] You have ' + str(POINTS_COUNTER) + ' points on your account !')
                 browser.get('https://rewards.microsoft.com/dashboard')
                 if not LOGS[CURRENT_ACCOUNT]['Daily']:
-                    print('[DAILY SET]', 'Trying to complete the Daily Set...')
                     completeDailySet(browser)
-                    LOGS[CURRENT_ACCOUNT]['Daily'] = True
-                    updateLogs()
-                    prGreen('[DAILY SET] Completed the Daily Set successfully !')
                 if not LOGS[CURRENT_ACCOUNT]['Punch cards']:
-                    print('[PUNCH CARDS]', 'Trying to complete the Punch Cards...')
                     completePunchCards(browser)
-                    LOGS[CURRENT_ACCOUNT]['Punch cards'] = True
-                    updateLogs()
-                    prGreen('[PUNCH CARDS] Completed the Punch Cards successfully !')
                 if not LOGS[CURRENT_ACCOUNT]['More promotions']:
-                    print('[MORE PROMO]', 'Trying to complete More Promotions...')
                     completeMorePromotions(browser)
-                    LOGS[CURRENT_ACCOUNT]['More promotions'] = True
-                    updateLogs()
-                    prGreen('[MORE PROMO] Completed More Promotions successfully !')
                 remainingSearches, remainingSearchesM = getRemainingSearches(browser)
-                MOBILE = True if remainingSearchesM != 0 else False
+                MOBILE = bool(remainingSearchesM)
                 if remainingSearches != 0:
                     print('[BING]', 'Starting Desktop and Edge Bing searches...')
                     bingSearches(browser, remainingSearches)
@@ -1209,10 +1669,21 @@ def farmer():
                     LOGS[CURRENT_ACCOUNT]['PC searches'] = True
                     updateLogs()
                     ERROR = False
+                    # Try to redeem a gift card if there are enough points
+                if ARGS.redeem:
+                    if 'goal' in account:
+                        goal = account["goal"]
+                    else:
+                        print(
+                            '[REEDEM] Goal has not been defined for this account, defaulting to Amazon Giftcard...'
+                        )
+                        goal = 'Amazon'
+                    
+                    redeem(browser, goal)
                 browser.quit()
 
             if MOBILE:
-                browser = browserSetup(True, account.get('mobile_user_agent', MOBILE_USER_AGENT))
+                browser = browserSetup(True, account.get('mobile_user_agent', MOBILE_USER_AGENT), random.choice(ARGS.proxies) if ARGS.proxies else None)
                 print('[LOGIN]', 'Logging-in...')
                 login(browser, account['username'], account['password'], True)
                 prGreen('[LOGIN] Logged-in successfully !')
@@ -1241,12 +1712,6 @@ def farmer():
         ERROR = True
         browser.quit()
         farmer()
-    except SessionNotCreatedException:
-        prBlue('[Driver] Session not created.')
-        prBlue('[Driver] Please download correct version of webdriver form link below:')
-        prBlue('[Driver] https://chromedriver.chromium.org/downloads')
-        input('Press any key to close...')
-        exit()
     except KeyboardInterrupt:
         ERROR = True
         browser.quit()
@@ -1262,47 +1727,56 @@ def farmer():
         FINISHED_ACCOUNTS.clear()
 
 def main():
-    display = Display(visible=0, size=(900, 800))
-    display.start()
-
     global LANG, GEO, TZ, ARGS
+    
+    start = time.time()
     # show colors in terminal
-    os.system('color')
-    logo()
+    if os.name == 'nt':
+        os.system('color')
     # Get the arguments from the command line
     ARGS = argumentParser()
+    
     LANG, GEO, TZ = getCCodeLangAndOffset()
-    # set time to launch the program if everyday is not set
-#     if not ARGS.everyday:
-#         answer = input('''If you want to run the program at a specific time, type your desired time in 24h format (HH:MM) else press Enter
-# (\033[93manything other than time causes the script to start immediately\033[00m): ''')
-#         run_on = validate_time(answer)
-#     else:
-#         run_on = ARGS.everyday
-    run_on = None
-    if run_on is not None:
+    
+    # Enable virtual display if headless argument is present and proxies require authentication (Linux)
+    if platform.system() == "Linux" and ARGS.headless and ARGS.proxies and ARGS.authproxies:
+        display = Display(visible=0, size=(800, 600))
+        display.start()
+    
+    if ARGS.proxies:
+        remove_malfunctioning_proxies()
+        if not ARGS.proxies:
+            prRed("[PROXY CHECKER] Introduced proxies are not valid, exiting...")
+            if ARGS.emailalerts:
+                send_email("", "proxyfail")
+            os._exit(0)
+        else:
+            prGreen("[PROXY CHECKER] Malfunctioning proxies have been removed, starting farmer...")
+    
+    # load accounts
+    loadAccounts()
+    # set time to launch the program if everyday is set
+    if ARGS.everyday is not None:
         while True:
-            if datetime.now().strftime("%H:%M") == run_on:
-                start = time.time()
+            if datetime.now().strftime("%H:%M") == ARGS.everyday:
                 logs()
                 farmer()
                 send_apprise_alert()
-                if ARGS.everyday is None:
-                    break
             time.sleep(30)
     else:
-        start = time.time()
         logs()
         farmer()
         send_apprise_alert()
+    # Disable virtual display if it has been activated (Linux)
+    if platform.system() == "Linux" and ARGS.headless and ARGS.proxies and ARGS.authproxies:
+        display.stop()
     end = time.time()
     delta = end - start
     hour, remain = divmod(delta, 3600)
     min, sec = divmod(remain, 60)
-    print(f"The farmer takes : {hour:02.0f}:{min:02.0f}:{sec:02.0f}")
-    # input('Press any key to close the program...')
-    display.stop()
-
+    print(f"The script took : {hour:02.0f}:{min:02.0f}:{sec:02.0f}")
+    LOGS["Elapsed time"] = f"{hour:02.0f}:{min:02.0f}:{sec:02.0f}"
+    updateLogs()
+          
 if __name__ == '__main__':
-    init_logging()
     main()
