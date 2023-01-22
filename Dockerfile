@@ -9,6 +9,7 @@ WORKDIR /app
 
 # Install deps from APT
 RUN apt-get update && apt-get install -y \
+  iputils-ping \
   tzdata \
   wget \
   gpg \
